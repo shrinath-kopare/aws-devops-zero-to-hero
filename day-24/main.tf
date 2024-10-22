@@ -1,23 +1,35 @@
 resource "aws_vpc" "myvpc" {
-  cidr_block = var.cidr
+  cidr_block = var.vpc_cidr
+  tags = {
+    Name = "myvpc"
+  }
 }
 
 resource "aws_subnet" "sub1" {
   vpc_id                  = aws_vpc.myvpc.id
-  cidr_block              = "10.0.0.0/24"
-  availability_zone       = "us-east-1a"
+  cidr_block              = var.sub1_cidr
+  availability_zone       = var.sub1_region
   map_public_ip_on_launch = true
+  tags = {
+    Name = "sub1"
+  }
 }
 
 resource "aws_subnet" "sub2" {
   vpc_id                  = aws_vpc.myvpc.id
-  cidr_block              = "10.0.1.0/24"
-  availability_zone       = "us-east-1b"
+  cidr_block              = var.sub2_cidr
+  availability_zone       = var.sub2_region
   map_public_ip_on_launch = true
+  tags = {
+    Name = "sub2"
+  }
 }
 
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.myvpc.id
+  tags = {
+    Name = "igw"
+  }
 }
 
 resource "aws_route_table" "RT" {
@@ -26,6 +38,10 @@ resource "aws_route_table" "RT" {
   route {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.igw.id
+  }
+
+  tags = {
+    Name = "RT"
   }
 }
 
@@ -39,77 +55,138 @@ resource "aws_route_table_association" "rta2" {
   route_table_id = aws_route_table.RT.id
 }
 
-resource "aws_security_group" "webSg" {
-  name   = "web"
+resource "aws_security_group" "websg" {
+  name   = "websg"
   vpc_id = aws_vpc.myvpc.id
 
-  ingress {
-    description = "HTTP from VPC"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  tags = {
+    Name = "websg"
   }
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+}
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+resource "aws_vpc_security_group_ingress_rule" "ingresshttp" {
+  description       = "HTTP"
+  security_group_id = aws_security_group.websg.id
+  cidr_ipv4         = var.anywhere_ipv4_cidr
+  from_port         = 80
+  ip_protocol       = "tcp"
+  to_port           = 80
+}
+
+resource "aws_vpc_security_group_ingress_rule" "ingressssh" {
+  description       = "SSH"
+  security_group_id = aws_security_group.websg.id
+  cidr_ipv4         = var.anywhere_ipv4_cidr
+  from_port         = 22
+  ip_protocol       = "tcp"
+  to_port           = 22
+}
+
+resource "aws_vpc_security_group_egress_rule" "egressanywhere" {
+  description       = "Anywhere"
+  security_group_id = aws_security_group.websg.id
+  cidr_ipv4         = var.anywhere_ipv4_cidr
+  ip_protocol       = "-1" # semantically equivalent to all ports
+}
+
+resource "aws_security_group" "ec2sg" {
+  name   = "ec2sg"
+  vpc_id = aws_vpc.myvpc.id
 
   tags = {
-    Name = "Web-sg"
+    Name = "ec2sg"
   }
 }
 
-resource "aws_s3_bucket" "example" {
-  bucket = "abhisheksterraform2023project"
+resource "aws_vpc_security_group_ingress_rule" "fromalb" {
+  description       = "fromalb"
+  security_group_id = aws_security_group.ec2sg.id
+  referenced_security_group_id = aws_security_group.websg.id
+  #cidr_ipv4         = aws_lb.mylb.
+  from_port         = 80
+  ip_protocol       = "tcp"
+  to_port           = 80
 }
 
+resource "aws_vpc_security_group_egress_rule" "foralb" {
+  description       = "foralb"
+  security_group_id = aws_security_group.ec2sg.id
+  cidr_ipv4         = var.anywhere_ipv4_cidr
+  ip_protocol       = "-1" # semantically equivalent to all ports
+}
 
-resource "aws_instance" "webserver1" {
-  ami                    = "ami-0261755bbcb8c4a84"
-  instance_type          = "t2.micro"
-  vpc_security_group_ids = [aws_security_group.webSg.id]
+resource "aws_s3_bucket" "mybucket" {
+  bucket = "shrinathkopareterraformbucket"
+
+  tags = {
+    Name = "My bucket"
+  }
+}
+
+resource "aws_s3_bucket_ownership_controls" "myoc" {
+  bucket = aws_s3_bucket.mybucket.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "mypab" {
+  bucket = aws_s3_bucket.mybucket.id
+
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+resource "aws_s3_bucket_acl" "myacl" {
+  depends_on = [
+    aws_s3_bucket_ownership_controls.myoc,
+    aws_s3_bucket_public_access_block.mypab,
+  ]
+
+  bucket = aws_s3_bucket.mybucket.id
+  acl    = "public-read"
+}
+
+resource "aws_instance" "server1" {
+  ami                    = var.microami
+  instance_type          = var.microinstance
+  vpc_security_group_ids = [aws_security_group.ec2sg.id]
   subnet_id              = aws_subnet.sub1.id
   user_data              = base64encode(file("userdata.sh"))
-}
-
-resource "aws_instance" "webserver2" {
-  ami                    = "ami-0261755bbcb8c4a84"
-  instance_type          = "t2.micro"
-  vpc_security_group_ids = [aws_security_group.webSg.id]
-  subnet_id              = aws_subnet.sub2.id
-  user_data              = base64encode(file("userdata1.sh"))
-}
-
-#create alb
-resource "aws_lb" "myalb" {
-  name               = "myalb"
-  internal           = false
-  load_balancer_type = "application"
-
-  security_groups = [aws_security_group.webSg.id]
-  subnets         = [aws_subnet.sub1.id, aws_subnet.sub2.id]
 
   tags = {
-    Name = "web"
+    Name = "Serve1"
   }
 }
 
-resource "aws_lb_target_group" "tg" {
-  name     = "myTG"
-  port     = 80
+resource "aws_instance" "server2" {
+  ami                    = var.microami
+  instance_type          = var.microinstance
+  vpc_security_group_ids = [aws_security_group.ec2sg.id]
+  subnet_id              = aws_subnet.sub2.id
+  user_data              = base64encode(file("userdata1.sh"))
+
+  tags = {
+    Name = "Serve2"
+  }
+}
+
+resource "aws_lb" "mylb" {
+  name = "mylb"
+  internal = false
+  load_balancer_type = "application"
+
+  security_groups = [aws_security_group.websg.id]
+  subnets = [aws_subnet.sub1.id, aws_subnet.sub2.id]
+}
+
+resource "aws_lb_target_group" "mytg" {
+  name = "mytg"
+  port = 80
   protocol = "HTTP"
-  vpc_id   = aws_vpc.myvpc.id
+  vpc_id = aws_vpc.myvpc.id
 
   health_check {
     path = "/"
@@ -118,28 +195,28 @@ resource "aws_lb_target_group" "tg" {
 }
 
 resource "aws_lb_target_group_attachment" "attach1" {
-  target_group_arn = aws_lb_target_group.tg.arn
-  target_id        = aws_instance.webserver1.id
-  port             = 80
+  target_group_arn = aws_lb_target_group.mytg.arn
+  target_id = aws_instance.server1.id
+  port = 80
 }
 
 resource "aws_lb_target_group_attachment" "attach2" {
-  target_group_arn = aws_lb_target_group.tg.arn
-  target_id        = aws_instance.webserver2.id
-  port             = 80
+  target_group_arn = aws_lb_target_group.mytg.arn
+  target_id = aws_instance.server2.id
+  port = 80
 }
 
 resource "aws_lb_listener" "listener" {
-  load_balancer_arn = aws_lb.myalb.arn
-  port              = 80
-  protocol          = "HTTP"
+  load_balancer_arn = aws_lb.mylb.arn
+  port = 80
+  protocol = "HTTP"
 
   default_action {
-    target_group_arn = aws_lb_target_group.tg.arn
-    type             = "forward"
+    target_group_arn = aws_lb_target_group.mytg.arn
+    type = "forward"
   }
 }
 
-output "loadbalancerdns" {
-  value = aws_lb.myalb.dns_name
+output "load_balancer_dns" {
+  value = aws_lb.mylb.dns_name
 }
